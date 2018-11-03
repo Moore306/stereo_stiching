@@ -1,97 +1,55 @@
 #include <iostream>
-#include <opencv2/core/core.hpp>
-#include <opencv2/features2d/features2d.hpp>
-#include <opencv2/highgui/highgui.hpp>
-
-
-#include<time.h>	
-using namespace std;
+#include <opencv2/opencv.hpp>
+#include<time.h>
 using namespace cv;
+using namespace std;
 
-int main(int argc, char** argv)
+int main()
 {
-	//if (argc != 3)
-	//{
-	//	cout << "usage: feature_extraction img1 img2" << endl;
-	//	return 1;
-	//}
-	//-- 读取图像
-	clock_t startTime, endTime;
-		Mat img_1 = imread("c.jpg", CV_LOAD_IMAGE_COLOR);
-	Mat img_2 = imread("d.jpg", CV_LOAD_IMAGE_COLOR);
-	startTime = clock();
-
-
-	
-	//-- 初始化
-	std::vector<KeyPoint> keypoints_1, keypoints_2;
-	Mat descriptors_1, descriptors_2;
-	Ptr<FeatureDetector> detector = ORB::create();
-	Ptr<DescriptorExtractor> descriptor = ORB::create();
-	// Ptr<FeatureDetector> detector = FeatureDetector::create(detector_name);
-	// Ptr<DescriptorExtractor> descriptor = DescriptorExtractor::create(descriptor_name);
-	Ptr<DescriptorMatcher> matcher = DescriptorMatcher::create("BruteForce-Hamming");
-
-	//-- 第一步:检测 Oriented FAST 角点位置
-	detector->detect(img_1, keypoints_1);
-	detector->detect(img_2, keypoints_2);
-
-	//-- 第二步:根据角点位置计算 BRIEF 描述子
-	descriptor->compute(img_1, keypoints_1, descriptors_1);
-	descriptor->compute(img_2, keypoints_2, descriptors_2);
-
-	Mat outimg1;
-	drawKeypoints(img_1, keypoints_1, outimg1, Scalar::all(-1), DrawMatchesFlags::DEFAULT);
-	//imshow("ORB特征点", outimg1);
-
-	//-- 第三步:对两幅图像中的BRIEF描述子进行匹配，使用 Hamming 距离
-	vector<DMatch> matches;
-	//BFMatcher matcher ( NORM_HAMMING );
-	matcher->match(descriptors_1, descriptors_2, matches);
-
-	//-- 第四步:匹配点对筛选
-	double min_dist = 10000, max_dist = 0;
-
-	//找出所有匹配之间的最小距离和最大距离, 即是最相似的和最不相似的两组点之间的距离
-	for (int i = 0; i < descriptors_1.rows; i++)
-	{
-		double dist = matches[i].distance;
-		if (dist < min_dist) min_dist = dist;
-		if (dist > max_dist) max_dist = dist;
+	Mat img1 = imread("c.jpg");
+	Mat img2 = imread("d.jpg");
+	if (img1.empty() || img2.empty()) {
+		cout << "could not load image .." << endl;
+		return -1;
 	}
 
-	// 仅供娱乐的写法
-	min_dist = min_element(matches.begin(), matches.end(), [](const DMatch& m1, const DMatch& m2) {return m1.distance<m2.distance; })->distance;
-	max_dist = max_element(matches.begin(), matches.end(), [](const DMatch& m1, const DMatch& m2) {return m1.distance<m2.distance; })->distance;
+	//namedWindow("DMatch");
+	clock_t start = clock();
+	vector<KeyPoint> keyPoint1, keyPoint2;
+	Mat descriptor1, descriptor2;
+	Ptr<ORB> orb = ORB::create(100);
 
-	printf("-- Max dist : %f \n", max_dist);
-	printf("-- Min dist : %f \n", min_dist);
+	orb->detectAndCompute(img1, Mat(), keyPoint1, descriptor1);
+	orb->detectAndCompute(img2, Mat(), keyPoint2, descriptor2);
 
-	//当描述子之间的距离大于两倍的最小距离时,即认为匹配有误.但有时候最小距离会非常小,设置一个经验值30作为下限.
-	std::vector< DMatch > good_matches;
-	for (int i = 0; i < descriptors_1.rows; i++)
-	{
-		if (matches[i].distance <= max(2 * min_dist, 30.0))
-		{
-			good_matches.push_back(matches[i]);
-		}
+	vector<DMatch> match;
+	//暴力匹配
+	BFMatcher bfMatcher(NORM_HAMMING);
+	//快速最近邻逼近搜索函数库
+	//FlannBasedMatcher fbMatcher(NORM_HAMMING);
+	Mat outImg;
+	bfMatcher.match(descriptor1, descriptor2, match, Mat());
+
+	double dist_min = 1000;
+	double dist_max = 0;
+	for (size_t t = 0; t<match.size(); t++) {
+		double dist = match[t].distance;
+		if (dist<dist_min) dist_min = dist;
+		if (dist>dist_max) dist_max = dist;
 	}
 
-	//-- 第五步:绘制匹配结果
-	Mat img_match;
-	Mat img_goodmatch;
-	drawMatches(img_1, keypoints_1, img_2, keypoints_2, matches, img_match);
-	drawMatches(img_1, keypoints_1, img_2, keypoints_2, good_matches, img_goodmatch);
-	//imshow("所有匹配点对", img_match);
-	//imshow("优化后匹配点对", img_goodmatch);
-	//waitKey(0);
+	vector<DMatch> goodMatch;
+	for (size_t t = 0; t<match.size(); t++) {
+		double dist = match[t].distance;
+		if (dist <= max(2 * dist_min, 30.0))
+			goodMatch.push_back(match[t]);
+	}
+	drawMatches(img1, keyPoint1, img2, keyPoint2, goodMatch, outImg);
+	clock_t end_time = clock();
+	cout << "Running time is: " << static_cast<double>(end_time - start) / CLOCKS_PER_SEC * 1000 << "ms" << endl;//输出
+	imwrite("DMatch.jpg", outImg);
+	//imshow("DMatch", outImg);
+	waitKey(0);
 
-
-	endTime = clock();
-	cout << "Totle Time : " << (double)(endTime - startTime) / CLOCKS_PER_SEC << "s" << endl;
-	imwrite("img_match.jpg",img_match);
-	imwrite("img_goodmatch.jpg", img_goodmatch);
-	imwrite("outimg1.jpg", outimg1);
-	system("pause");
 	return 0;
 }
