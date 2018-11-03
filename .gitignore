@@ -1,0 +1,7 @@
+*.jpg
+/Debug/
+/x64/
+/diff/
+*.vcxproj
+*.filters
+
