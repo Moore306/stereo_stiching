@@ -1,55 +1,208 @@
 #include <iostream>
-#include <opencv2/opencv.hpp>
-#include<time.h>
+#include <fstream>
+
+#include <opencv2/core/utility.hpp>
+#include "opencv2/video.hpp"
+#include "opencv2/imgcodecs.hpp"
+#include "opencv2/highgui.hpp"
+
 using namespace cv;
 using namespace std;
 
-int main()
+inline bool isFlowCorrect(Point2f u)
 {
-	Mat img1 = imread("c.jpg");
-	Mat img2 = imread("d.jpg");
-	if (img1.empty() || img2.empty()) {
-		cout << "could not load image .." << endl;
+	return !cvIsNaN(u.x) && !cvIsNaN(u.y) && fabs(u.x) < 1e9 && fabs(u.y) < 1e9;
+}
+
+static Vec3b computeColor(float fx, float fy)
+{
+	static bool first = true;
+
+	// relative lengths of color transitions:
+	// these are chosen based on perceptual similarity
+	// (e.g. one can distinguish more shades between red and yellow
+	//  than between yellow and green)
+	const int RY = 15;
+	const int YG = 6;
+	const int GC = 4;
+	const int CB = 11;
+	const int BM = 13;
+	const int MR = 6;
+	const int NCOLS = RY + YG + GC + CB + BM + MR;
+	static Vec3i colorWheel[NCOLS];
+
+	if (first)
+	{
+		int k = 0;
+
+		for (int i = 0; i < RY; ++i, ++k)
+			colorWheel[k] = Vec3i(255, 255 * i / RY, 0);
+
+		for (int i = 0; i < YG; ++i, ++k)
+			colorWheel[k] = Vec3i(255 - 255 * i / YG, 255, 0);
+
+		for (int i = 0; i < GC; ++i, ++k)
+			colorWheel[k] = Vec3i(0, 255, 255 * i / GC);
+
+		for (int i = 0; i < CB; ++i, ++k)
+			colorWheel[k] = Vec3i(0, 255 - 255 * i / CB, 255);
+
+		for (int i = 0; i < BM; ++i, ++k)
+			colorWheel[k] = Vec3i(255 * i / BM, 0, 255);
+
+		for (int i = 0; i < MR; ++i, ++k)
+			colorWheel[k] = Vec3i(255, 0, 255 - 255 * i / MR);
+
+		first = false;
+	}
+
+	const float rad = sqrt(fx * fx + fy * fy);
+	const float a = atan2(-fy, -fx) / (float)CV_PI;
+
+	const float fk = (a + 1.0f) / 2.0f * (NCOLS - 1);
+	const int k0 = static_cast<int>(fk);
+	const int k1 = (k0 + 1) % NCOLS;
+	const float f = fk - k0;
+
+	Vec3b pix;
+
+	for (int b = 0; b < 3; b++)
+	{
+		const float col0 = colorWheel[k0][b] / 255.f;
+		const float col1 = colorWheel[k1][b] / 255.f;
+
+		float col = (1 - f) * col0 + f * col1;
+
+		if (rad <= 1)
+			col = 1 - rad * (1 - col); // increase saturation with radius
+		else
+			col *= .75; // out of range
+
+		pix[2 - b] = static_cast<uchar>(255.f * col);
+	}
+
+	return pix;
+}
+
+static void drawOpticalFlow(const Mat_<Point2f>& flow, Mat& dst, float maxmotion = -1)
+{
+	dst.create(flow.size(), CV_8UC3);
+	dst.setTo(Scalar::all(0));
+
+	// determine motion range:
+	float maxrad = maxmotion;
+
+	if (maxmotion <= 0)
+	{
+		maxrad = 1;
+		for (int y = 0; y < flow.rows; ++y)
+		{
+			for (int x = 0; x < flow.cols; ++x)
+			{
+				Point2f u = flow(y, x);
+
+				if (!isFlowCorrect(u))
+					continue;
+
+				maxrad = max(maxrad, sqrt(u.x * u.x + u.y * u.y));
+			}
+		}
+	}
+
+	for (int y = 0; y < flow.rows; ++y)
+	{
+		for (int x = 0; x < flow.cols; ++x)
+		{
+			Point2f u = flow(y, x);
+
+			if (isFlowCorrect(u))
+				dst.at<Vec3b>(y, x) = computeColor(u.x / maxrad, u.y / maxrad);
+		}
+	}
+}
+
+// binary file format for flow data specified here:
+// http://vision.middlebury.edu/flow/data/
+static void writeOpticalFlowToFile(const Mat_<Point2f>& flow, const string& fileName)
+{
+	static const char FLO_TAG_STRING[] = "PIEH";
+
+	ofstream file(fileName.c_str(), ios_base::binary);
+
+	file << FLO_TAG_STRING;
+
+	file.write((const char*)&flow.cols, sizeof(int));
+	file.write((const char*)&flow.rows, sizeof(int));
+
+	for (int i = 0; i < flow.rows; ++i)
+	{
+		for (int j = 0; j < flow.cols; ++j)
+		{
+			const Point2f u = flow(i, j);
+
+			file.write((const char*)&u.x, sizeof(float));
+			file.write((const char*)&u.y, sizeof(float));
+		}
+	}
+}
+
+int main(int argc, const char* argv[])
+{
+	/*cv::CommandLineParser parser(argc, argv, "{help h || show help message}"
+		"{ @frame0 | | frame 0}{ @frame1 | | frame 1}{ @output | | output flow}");
+	if (parser.has("help"))
+	{
+		parser.printMessage();
+		return 0;
+	}
+	string frame0_name = parser.get<string>("@frame0");
+	string frame1_name = parser.get<string>("@frame1");
+	string file = parser.get<string>("@output");
+	if (frame0_name.empty() || frame1_name.empty() || file.empty())
+	{
+		cerr << "Usage : " << argv[0] << " [<frame0>] [<frame1>] [<output_flow>]" << endl;
+		return -1;
+	}*/
+
+	/*Mat frame0 = imread(frame0_name, IMREAD_GRAYSCALE);
+	Mat frame1 = imread(frame1_name, IMREAD_GRAYSCALE);*/
+	Mat frame0 = imread("c.jpg", IMREAD_GRAYSCALE);
+	Mat frame1 = imread("d.jpg", IMREAD_GRAYSCALE);
+	resize(frame0, frame0, Size(), 0.1, 0.1);
+	resize(frame1, frame1, Size(), 0.1, 0.1);
+	/*if (frame0.empty())
+	{
+		cerr << "Can't open image [" << parser.get<string>("frame0") << "]" << endl;
+		return -1;
+	}
+	if (frame1.empty())
+	{
+		cerr << "Can't open image [" << parser.get<string>("frame1") << "]" << endl;
 		return -1;
 	}
 
-	//namedWindow("DMatch");
-	clock_t start = clock();
-	vector<KeyPoint> keyPoint1, keyPoint2;
-	Mat descriptor1, descriptor2;
-	Ptr<ORB> orb = ORB::create(100);
-
-	orb->detectAndCompute(img1, Mat(), keyPoint1, descriptor1);
-	orb->detectAndCompute(img2, Mat(), keyPoint2, descriptor2);
-
-	vector<DMatch> match;
-	//暴力匹配
-	BFMatcher bfMatcher(NORM_HAMMING);
-	//快速最近邻逼近搜索函数库
-	//FlannBasedMatcher fbMatcher(NORM_HAMMING);
-	Mat outImg;
-	bfMatcher.match(descriptor1, descriptor2, match, Mat());
-
-	double dist_min = 1000;
-	double dist_max = 0;
-	for (size_t t = 0; t<match.size(); t++) {
-		double dist = match[t].distance;
-		if (dist<dist_min) dist_min = dist;
-		if (dist>dist_max) dist_max = dist;
+	if (frame1.size() != frame0.size())
+	{
+		cerr << "Images should be of equal sizes" << endl;
+		return -1;
 	}
+*/
+	Mat_<Point2f> flow;
+	Ptr<DualTVL1OpticalFlow> tvl1 = cv::DualTVL1OpticalFlow::create();
 
-	vector<DMatch> goodMatch;
-	for (size_t t = 0; t<match.size(); t++) {
-		double dist = match[t].distance;
-		if (dist <= max(2 * dist_min, 30.0))
-			goodMatch.push_back(match[t]);
-	}
-	drawMatches(img1, keyPoint1, img2, keyPoint2, goodMatch, outImg);
-	clock_t end_time = clock();
-	cout << "Running time is: " << static_cast<double>(end_time - start) / CLOCKS_PER_SEC * 1000 << "ms" << endl;//输出
-	imwrite("DMatch.jpg", outImg);
-	//imshow("DMatch", outImg);
-	waitKey(0);
+	const double start = (double)getTickCount();
+	tvl1->calc(frame0, frame1, flow);
+	const double timeSec = (getTickCount() - start) / getTickFrequency();
+	cout << "calcOpticalFlowDual_TVL1 : " << timeSec << " sec" << endl;
+
+	Mat out;
+	drawOpticalFlow(flow, out);
+	string file = "flow.jpg";
+	if (!file.empty())
+		writeOpticalFlowToFile(flow, file);
+
+	imshow("Flow", out);
+	waitKey();
 
 	return 0;
 }
